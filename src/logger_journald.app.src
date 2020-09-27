@@ -1,0 +1,15 @@
+{application, logger_journald, [
+    {description, "Systemd's journald backend for OTP logger"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib
+    ]},
+    {env, []},
+    {mod, {logger_journald_app, []}},
+    {modules, []},
+
+    {licenses, ["Apache 2.0"]},
+    {links, []}
+]}.
