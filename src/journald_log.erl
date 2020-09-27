@@ -52,7 +52,7 @@ open(Opts) ->
 -spec log(log_msg(), handle()) -> ok | {error, inet:posix()}.
 log(KV, #state{fd = Fd, path = Path}) ->
     Packet = format(KV),
-    gen_udp:send(Fd, {local, Path}, Packet).
+    gen_udp_send(Fd, {local, Path}, Packet).
 
 %% @doc Formats a flat Key-Value message to a (non-documented) format acceptable by journald socket
 -spec format(log_msg()) -> iodata().
@@ -63,6 +63,14 @@ format([_ | _] = KV) when is_list(KV) ->
 
 %% =====================
 %% Internal
+
+-if(?OTP_RELEASE >= 22).
+gen_udp_send(Fd, Dest, Packet) ->
+    gen_udp:send(Fd, Dest, Packet).
+-else.
+gen_udp_send(Fd, Dest, Packet) ->
+    gen_udp:send(Fd, Dest, 0, Packet).
+-endif.
 
 %% Keys supposed to be uppercase, but we are not enforcing that
 format_pair(K, V) when is_integer(V) ->
