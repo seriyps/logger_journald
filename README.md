@@ -54,7 +54,10 @@ Multiple instances of `logger_journald_h` handler can be started.
 
 It's not currently possible to set `logger_journald_h` as `default` handler via `sys.config`,
 because `sys.config` is applied at `kernel` application start time and `logger_journald`
-application depends on `kernel` application (sort of cyclic dependency).
+application depends on `kernel` application (sort of cyclic dependency). However, disabling
+`default` handler and installing just `logger_journald_d` works fine (but you might miss some
+of early start-up related logs)
+`[{handler, default, undefined}, {handler, my_handler, logger_journald_d, #{}}]`.
 
 There is also [journald_log](src/journald_log.erl) module available, which provides a thin wrapper
 with limited API for journald's control socket.
@@ -73,7 +76,7 @@ which writes it to journld's socket via `gen_udp`.
 Be careful! All the log messages targeting one handler are sent through the single gen_server!
 There is no backpressure support at the moment!
 
-The way (`logger:log_event()`)[http://erlang.org/doc/man/logger.html#type-log_event] is converted
+The way [logger:log_event()](http://erlang.org/doc/man/logger.html#type-log_event) is converted
 to a journald flat key-value structure is following:
 
 * `msg` is sent as `MESSAGE` field
