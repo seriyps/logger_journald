@@ -113,7 +113,7 @@ ensure_app() ->
     end.
 
 -spec normalize_event(logger:log_event()) -> journald_log:log_msg().
-normalize_event(#{level := Level, msg := {string, Msg}, meta := Meta}) ->
+normalize_event(#{msg := {string, Msg}, level := Level, meta := Meta}) ->
     maps:from_list(
         [
             {<<"PRIORITY">>, convert_level(Level)},
@@ -121,19 +121,22 @@ normalize_event(#{level := Level, msg := {string, Msg}, meta := Meta}) ->
             | convert_meta(maps:to_list(Meta))
         ]
     );
-normalize_event(#{msg := {report, Report}, meta := #{report_cb := Cb}} = Msg) when
-    is_function(Cb, 1)
-->
-    %% TODO: infinite loop if Cb returns {report, ..}
-    normalize_event(Msg#{msg := Cb(Report)});
-normalize_event(#{msg := {report, Report}, meta := #{report_cb := Cb}} = Msg) when
-    is_function(Cb, 2)
-->
-    normalize_event(Msg#{msg := Cb(Report, #{})});
+normalize_event(#{msg := {report, Report}, meta := #{report_cb := Cb}} = Msg) ->
+    normalize_event(Msg#{msg := format_report(Report, Cb)});
 normalize_event(#{msg := {report, Report}} = Msg) ->
-    normalize_event(Msg#{msg := logger:format_report(Report)});
+    normalize_event(Msg#{msg := format_report(Report, fun logger:format_report/1)});
 normalize_event(#{msg := {Format, Args}} = Msg) when is_list(Format) ->
     normalize_event(Msg#{msg := {string, io_lib:format(Format, Args)}}).
+
+format_report(Report, Cb) when is_function(Cb, 2) ->
+    format_report(Report, fun(R) -> Cb(R, []) end);
+format_report(Report, Cb) when is_function(Cb, 1) ->
+    case Cb(Report) of
+        {Fmt, Args} = Msg when is_list(Fmt), is_list(Args) ->
+            Msg;
+        Str when is_list(Str); is_binary(Str) ->
+            {string, Str}
+    end.
 
 convert_level(Level) ->
     %% value between 0 ("emerg") and 7 ("debug") formatted as a decimal string
@@ -174,11 +177,17 @@ convert_meta(domain, Domain) ->
     {<<"ERL_DOMAIN">>, lists:join($., lists:map(fun erlang:atom_to_list/1, Domain))};
 convert_meta(report_cb, _Cb) ->
     false;
+convert_meta(Key, Value) when
+    is_list(Key) orelse is_binary(Key),
+    is_list(Key) orelse
+        is_binary(Value) orelse
+        is_atom(Value) orelse
+        is_integer(Value)
+->
+    normalize_kv(Key, Value);
 convert_meta(Key, Value) when is_atom(Key) ->
     convert_meta(atom_to_binary(Key, utf8), Value);
-convert_meta(Key, Value) when is_binary(Value) ->
-    normalize_kv(Key, Value);
-convert_meta(Key, Value) when is_binary(Key) ->
+convert_meta(Key, Value) ->
     normalize_kv(Key, io_lib:format("~p", [Value])).
 
 normalize_flat(Map) ->
