@@ -1,0 +1,12 @@
+language: erlang
+otp_release:
+  - 23.0
+  - 22.3
+  - 21.3
+script:
+  - rebar3 compile
+  - rebar3 as dev lint
+  - rebar3 edoc
+  - rebar3 eunit -c
+  - rebar3 cover -v --min_coverage 20
+  - rebar3 dialyzer
