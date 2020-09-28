@@ -59,7 +59,7 @@ application depends on `kernel` application (sort of cyclic dependency). However
 of early start-up related logs)
 `[{handler, default, undefined}, {handler, my_handler, logger_journald_d, #{}}]`.
 
-There is also [journald_log](src/journald_log.erl) module available, which provides a thin wrapper
+There is also [journald_sock](src/journald_sock.erl) module available, which provides a thin wrapper
 with limited API for journald's control socket.
 
 How it works?

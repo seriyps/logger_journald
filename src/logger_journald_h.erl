@@ -2,8 +2,13 @@
 %%% @doc
 %%% OTP `logger' handler that sends logs to journald
 %%%
-%%% This handler does not provide any overload protection (yet). OTP's logger_olp is not
+%%% This handler does not provide any overload protection (yet). OTP's built-in `logger_olp' is not
 %%% documented (and not really reusable), so we can't use it here.
+%%%
+%%% Implementation of [http://erlang.org/doc/man/logger.html#handler_callback_functions
+%%%   logger handler callbacks].
+%%% See
+%%% [http://erlang.org/doc/apps/kernel/logger_chapter.html#example--implement-a-handler examples].
 %%% @end
 %%% @author Sergey Prokhorov <me@seriyps.ru>
 %%%-------------------------------------------------------------------
@@ -33,8 +38,22 @@
     code_change/3
 ]).
 
+-export_type([opts/0]).
+
+-type opts() :: #{
+    socket_path => file:filename_all(),
+    defaults => #{journald_sock:key() => journald_sock:value()}
+}.
+
+%% Handler's specific options
+%% <ul>
+%%   <li>`socket_path' - path to journald control socket</li>
+%%   <li>`defaults' - flat key-value pairs which will be mixed-in to every log message (unless
+%%   overwritten by message's own fields)</li>
+%% </ul>
+
 -record(state, {
-    handle :: journald_log:handle(),
+    handle :: journald_sock:handle(),
     defaults :: #{binary() => iodata()}
 }).
 
@@ -73,28 +92,39 @@ filter_config(#{config := Opts} = Config) ->
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
+%% @private
 init([_Id, Opts]) ->
     % borrowed from logger_olp
     process_flag(message_queue_data, off_heap),
-    Handle = journald_log:open(Opts),
+    Handle = journald_sock:open(Opts),
     Defaults = normalize_flat(maps:get(defaults, Opts, #{})),
     {ok, #state{handle = Handle, defaults = Defaults}}.
 
+%% @private
 handle_call({log, NormalizedEvent}, _From, #state{defaults = Defaults, handle = Handle} = State) ->
     %XXX: maybe do this in log/2, before sending?
     Event = maps:merge(Defaults, NormalizedEvent),
-    ok = journald_log:log(Event, Handle),
+    ok = journald_sock:log(Event, Handle),
     {reply, ok, State}.
 
+%% @private
 handle_cast(_Request, State) ->
     {noreply, State}.
 
+%% @private
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) ->
-    ok.
+%% @private
+terminate(_Reason, #state{handle = Handle}) ->
+    case journald_sock:is_handle(Handle) of
+        true ->
+            journald_sock:close(Handle);
+        false ->
+            ok
+    end.
 
+%% @private
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
@@ -112,7 +142,7 @@ ensure_app() ->
             ok
     end.
 
--spec normalize_event(logger:log_event()) -> journald_log:log_msg().
+-spec normalize_event(logger:log_event()) -> journald_sock:log_msg().
 normalize_event(#{msg := {string, Msg}, level := Level, meta := Meta}) ->
     maps:from_list(
         [

@@ -1,14 +1,14 @@
 %% @doc Tiny interface to Journald socket
 %%
-%% See `man sd_journal_send', `man systemd.journal-fields'
+%% See `man sd_journal_sendv', `man systemd.journal-fields'
 %%
 %% See [https://github.com/systemd/systemd/blob/v246/src/journal/journal-send.c#L206-L337
-%%      sd_journal_sendv]
--module(journald_log).
+%%      sd_journal_sendv implementation].
+-module(journald_sock).
 
--export([open/1, log/2, format/1]).
+-export([open/1, close/1, is_handle/1, log/2, format/1]).
 
--export_type([handle/0, log_msg/0]).
+-export_type([handle/0, log_msg/0, key/0, value/0]).
 
 -include_lib("kernel/include/file.hrl").
 
@@ -44,9 +44,21 @@ open(Opts) ->
         path = Path
     }.
 
+%% @doc Closes journald log socket
+-spec close(handle()) -> ok.
+close(#state{fd = S}) ->
+    gen_udp:close(S).
+
+%% @doc Returns `true' if the argument is `handle()' and `false' otherwise.
+%%
+%% Might be usefull to avoid opaqueness violations.
+-spec is_handle(any()) -> boolean().
+is_handle(#state{}) -> true;
+is_handle(_) -> false.
+
 %% @doc Logs a Key - Value message to journald socket
 %%
-%% Keys have to be `iodata()' and should not contain newlines or `=' signs
+%% Keys have to be `iodata()' and should not contain newlines or `=' signs.
 %% Values can be `iodata()', `atom()' or `integer()' and may contain any binaries. utf8 is
 %% preferrable
 -spec log(log_msg(), handle()) -> ok | {error, inet:posix()}.

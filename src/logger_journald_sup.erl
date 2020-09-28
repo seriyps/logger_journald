@@ -16,9 +16,11 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
+-spec start_handler(logger:handler_id(), logger_journald_h:opts()) -> {ok, pid()} | {error, any()}.
 start_handler(Name, Opts) ->
     supervisor:start_child(?MODULE, [Name, Opts]).
 
+-spec stop_handler(pid()) -> ok | {error, not_found}.
 stop_handler(Pid) ->
     supervisor:terminate_child(?MODULE, Pid).
 
