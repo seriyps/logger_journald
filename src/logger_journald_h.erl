@@ -209,7 +209,7 @@ convert_meta(report_cb, _Cb) ->
     false;
 convert_meta(Key, Value) when
     is_list(Key) orelse is_binary(Key),
-    is_list(Key) orelse
+    is_list(Value) orelse
         is_binary(Value) orelse
         is_atom(Value) orelse
         is_integer(Value)
