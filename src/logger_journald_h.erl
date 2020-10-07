@@ -72,7 +72,14 @@ adding_handler(#{id := Name, module := ?MODULE} = Config) ->
     ensure_app(),
     Opts = maps:get(config, Config, #{}),
     MyOpts = maps:with(?OPT_KEYS, Opts),
-    {ok, Pid} = logger_journald_sup:start_handler(Name, MyOpts),
+    Pid =
+        case logger_journald_sup:start_handler(Name, MyOpts) of
+            {ok, NewPid} ->
+                NewPid;
+            {error, {already_started, OldPid}} ->
+                %% maybe handler failed and have been restarted by supervisor
+                OldPid
+        end,
     {ok, Config#{config => Opts#{handler_pid => Pid}}}.
 
 changing_config(_SetOrUpdate, _OldConfig, NewConfig) ->
