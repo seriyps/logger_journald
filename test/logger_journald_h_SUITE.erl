@@ -8,7 +8,10 @@
     end_per_testcase/2
 ]).
 
--export([just_log_case/1]).
+-export([
+    just_log_case/1,
+    truncation_case/1
+]).
 
 -include_lib("stdlib/include/assert.hrl").
 -include_lib("common_test/include/ct.hrl").
@@ -136,6 +139,25 @@ just_log_case(Cfg) when is_list(Cfg) ->
         p_recv(Srv)
     ),
     ok.
+
+truncation_case({pre, Cfg}) ->
+    Srv = journald_server_mock:start(#{socket_opts => [{recbuf, 2048}]}),
+    add_handler_for_srv(?FUNCTION_NAME, Srv),
+    [{srv, Srv} | Cfg];
+truncation_case({post, Cfg}) ->
+    Srv = ?config(srv, Cfg),
+    logger:remove_handler(?FUNCTION_NAME),
+    journald_server_mock:stop(Srv),
+    Cfg;
+truncation_case(Cfg) when is_list(Cfg) ->
+    Srv = ?config(srv, Cfg),
+    Bin10 = list_to_binary(lists:seq($0, $9)),
+    <<MsgPart:1024/binary, _/binary>> = Msg = binary:copy(Bin10, 32 * 1024),
+    logger:log(info, Msg),
+    ShrunkMsg = <<MsgPart/binary, "…"/utf8>>,
+    ?assertMatch(#{<<"MESSAGE">> := ShrunkMsg}, p_recv(Srv)).
+
+%% Internal
 
 add_handler_for_srv(Id, Srv) ->
     Path = journald_server_mock:get_path(Srv),

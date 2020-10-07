@@ -10,10 +10,17 @@
 ]).
 
 start(Opts) ->
-    Default = #{socket_path => "/tmp/" ++ ?MODULE_STRING ++ ".sock"},
-    #{socket_path := Path} = maps:merge(Default, Opts),
+    Default = #{
+        socket_path => "/tmp/" ++ ?MODULE_STRING ++ ".sock",
+        socket_opts => []
+    },
+    #{
+        socket_path := Path,
+        socket_opts := ExtraSockOpts
+    } = maps:merge(Default, Opts),
+    file:delete(Path),
     Addr = {local, Path},
-    {ok, Sock} = gen_udp:open(0, [local, binary, {ifaddr, Addr}, {active, false}]),
+    {ok, Sock} = gen_udp:open(0, [local, binary, {ifaddr, Addr}, {active, false} | ExtraSockOpts]),
     #{sock => Sock, path => Path}.
 
 stop(#{sock := Sock, path := Path}) ->

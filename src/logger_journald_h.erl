@@ -109,10 +109,54 @@ init([_Id, Opts]) ->
 
 %% @private
 handle_call({log, NormalizedEvent}, _From, #state{defaults = Defaults, handle = Handle} = State) ->
-    %XXX: maybe do this in log/2, before sending?
+    %XXX: maybe do merge in log/2, before sending?
     Event = maps:merge(Defaults, NormalizedEvent),
-    ok = journald_sock:log(Event, Handle),
+    case try_send(Event, Handle) of
+        ok ->
+            ok;
+        {error, Posix} ->
+            %% just crash if this one also fails
+            MaybePid = maps:get(<<"ERL_PID">>, NormalizedEvent, <<"unknown">>),
+            Msg = io_lib:format("[logger] log emission for pid: ~p failed: ~p", [MaybePid, Posix]),
+            ok = journald_sock:log(
+                #{
+                    <<"MESSAGE">> => Msg,
+                    <<"PRIORITY">> => convert_level(error)
+                },
+                Handle
+            )
+    end,
     {reply, ok, State}.
+
+try_send(Event, Handle) ->
+    case journald_sock:log(Event, Handle) of
+        ok ->
+            ok;
+        {error, TooBig} when TooBig == emsgsize; TooBig == enobufs ->
+            ShrinkLimit = 1024,
+            ShrunkMap = shrink(Event, ShrinkLimit),
+            journald_sock:log(ShrunkMap, Handle)
+    end.
+
+shrink(Event, ShrinkLimit) ->
+    maps:map(
+        fun(_K, V) ->
+            try string:slice(V, 0, ShrinkLimit) of
+                ShrunkV ->
+                    case iolist_size(ShrunkV) of
+                        ShrinkLimit ->
+                            %% Was probably shrunk
+                            [ShrunkV, <<"…"/utf8>>];
+                        _ ->
+                            ShrunkV
+                    end
+            catch
+                _:_ ->
+                    <<"truncated">>
+            end
+        end,
+        Event
+    ).
 
 %% @private
 handle_cast(_Request, State) ->
@@ -225,7 +269,7 @@ convert_meta(Key, Value) when
 convert_meta(Key, Value) when is_atom(Key) ->
     convert_meta(atom_to_binary(Key, utf8), Value);
 convert_meta(Key, Value) ->
-    normalize_kv(Key, io_lib:format("~p", [Value])).
+    normalize_kv(Key, io_lib:format("~0p", [Value])).
 
 normalize_flat(Map) ->
     maps:from_list([normalize_kv(K, V) || {K, V} <- maps:to_list(Map)]).

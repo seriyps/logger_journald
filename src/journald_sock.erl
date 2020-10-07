@@ -108,7 +108,7 @@ has_nl_or_eq(Subj) ->
 has(Bin, What) when is_binary(Bin) ->
     binary:match(Bin, What) =/= nomatch;
 has(IoList, What) ->
-    re:run(IoList, [$[, What, $]], [{capture, none}]) =/= nomatch.
+    re:run(IoList, [$[, What, $]], [{capture, none}, unicode]) =/= nomatch.
 
 -ifdef(EUNIT).
 
