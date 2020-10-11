@@ -24,7 +24,8 @@ to your `sys.config`
             config => #{
               socket_path => "/run/systemd/journal/socket",  % optional
               defaults => #{"MY_KEY" => "My value",          % optional
-                            "SYSLOG_IDENTIFIER" => my_release}
+                            "SYSLOG_IDENTIFIER" => my_release},
+              formatter => {logger_formtter, #{max_size => 4096}}
             }
         }}
     ]}
@@ -41,13 +42,14 @@ logger:add_handler(my_handler, logger_journald_h,
 I'd recommend to add at least one key to `defaults` to uniquely identify your application. The
 recommended key name for that is `SYSLOG_IDENTIFIER`.
 
-Other `logger:handler_config()` options (`level`, `filters`) should also work, but not
-`formatter`, because format of `journald` packet is restricted.
+Other `logger:handler_config()` options (`level`, `filters`) should also work.
+`formatter` is limited: only `logger_formatter` callback module is supported and
+`legacy_header`, `template`, `time_*` options are ignored (this may change in the future).
 
 Then start your app and send some logs. They can be seen, eg, like this (see `man journalctl`):
 
 ```bash
-$ journalctl -f -o verbose _COMM=beam.smp SYSLOG_IDENTIFIER=my_release
+$ journalctl -f -o verbose _COMM=beam.smp -t my_release
 ```
 
 Multiple instances of `logger_journald_h` handler can be started.
@@ -79,10 +81,7 @@ There is no backpressure support at the moment!
 The way [logger:log_event()](http://erlang.org/doc/man/logger.html#type-log_event) is converted
 to a journald flat key-value structure is following:
 
-* `msg` is sent as `MESSAGE` field
-  * If `msg` is a `{report, logger:report()}`, then it is converted to a string with
-    `logger:report_cb()` function provided in `meta`.
-  * If `msg` is `{io:format(), [any()]}`, it is converted to a string with `io_lib:format/2`
+* `msg` is formatted with formatter and sent as `MESSAGE` field
 * `level` is converted to syslog's numerical value between 0 ("emergency") and 7 ("debug") and is
   sent as `PRIORITY` field
 * `meta` fields are encoded in a following way

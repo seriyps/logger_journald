@@ -92,9 +92,9 @@ just_log_case(Cfg) when is_list(Cfg) ->
     ?assertMatch(#{<<"MESSAGE">> := <<"Hello world">>}, p_recv(Srv)),
 
     logger:log(debug, #{a => b, c => d}),
-    ?assertMatch(#{<<"MESSAGE">> := <<"    a: b\n    c: d">>}, p_recv(Srv)),
+    ?assertMatch(#{<<"MESSAGE">> := <<"a: b, c: d">>}, p_recv(Srv)),
 
-    logger:log(error, #{a => b}, #{report_cb => fun(Rep) -> io_lib:format("~p", [Rep]) end}),
+    logger:log(error, #{a => b}, #{report_cb => fun(Rep) -> {"~p", [Rep]} end}),
     ?assertMatch(#{<<"MESSAGE">> := <<"#{a => b}">>}, p_recv(Srv)),
 
     logger:log(
@@ -102,7 +102,7 @@ just_log_case(Cfg) when is_list(Cfg) ->
         #{c => d},
         #{report_cb => fun(Rep, Smth) -> io_lib:format("~p ~p", [Rep, Smth]) end}
     ),
-    ?assertMatch(#{<<"MESSAGE">> := <<"#{c => d} []">>}, p_recv(Srv)),
+    ?assertMatch(#{<<"MESSAGE">> := <<"#{c => d} #{", _/binary>>}, p_recv(Srv)),
 
     logger:critical(
         "Error: ~p",

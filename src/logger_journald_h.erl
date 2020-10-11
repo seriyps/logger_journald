@@ -5,6 +5,9 @@
 %%% This handler does not provide any overload protection (yet). OTP's built-in `logger_olp' is not
 %%% documented (and not really reusable), so we can't use it here.
 %%%
+%%% It has a limited support for logger formatter: you can only use `logger_formatter' module and
+%%% `template' option will be ignored.
+%%%
 %%% Implementation of [http://erlang.org/doc/man/logger.html#handler_callback_functions
 %%%   logger handler callbacks].
 %%% See
@@ -89,8 +92,8 @@ changing_config(_SetOrUpdate, _OldConfig, NewConfig) ->
 removing_handler(#{config := #{handler_pid := Pid}}) ->
     logger_journald_sup:stop_handler(Pid).
 
-log(LogEvent, #{config := #{handler_pid := Pid}}) ->
-    NormalEvent = normalize_event(LogEvent),
+log(LogEvent, #{config := #{handler_pid := Pid}} = Conf) ->
+    NormalEvent = normalize_event(LogEvent, Conf),
     gen_server:call(Pid, {log, NormalEvent}).
 
 filter_config(#{config := Opts} = Config) ->
@@ -193,31 +196,21 @@ ensure_app() ->
             ok
     end.
 
--spec normalize_event(logger:log_event()) -> journald_sock:log_msg().
-normalize_event(#{msg := {string, Msg}, level := Level, meta := Meta}) ->
+-spec normalize_event(logger:log_event(), logger:handler_config()) -> journald_sock:log_msg().
+normalize_event(#{msg := _, level := Level, meta := Meta} = Event, Conf) ->
+    {logger_formatter, FormatterConf0} = maps:get(formatter, Conf, {logger_formatter, #{}}),
+    FormatterConf = maps:with(
+        [chars_limit, depth, max_size, report_cb, single_line],
+        FormatterConf0
+    ),
+    Msg = logger_formatter:format(Event, FormatterConf#{template => [msg]}),
     maps:from_list(
         [
             {<<"PRIORITY">>, convert_level(Level)},
             {<<"MESSAGE">>, Msg}
             | convert_meta(maps:to_list(Meta))
         ]
-    );
-normalize_event(#{msg := {report, Report}, meta := #{report_cb := Cb}} = Msg) ->
-    normalize_event(Msg#{msg := format_report(Report, Cb)});
-normalize_event(#{msg := {report, Report}} = Msg) ->
-    normalize_event(Msg#{msg := format_report(Report, fun logger:format_report/1)});
-normalize_event(#{msg := {Format, Args}} = Msg) when is_list(Format) ->
-    normalize_event(Msg#{msg := {string, io_lib:format(Format, Args)}}).
-
-format_report(Report, Cb) when is_function(Cb, 2) ->
-    format_report(Report, fun(R) -> Cb(R, []) end);
-format_report(Report, Cb) when is_function(Cb, 1) ->
-    case Cb(Report) of
-        {Fmt, Args} = Msg when is_list(Fmt), is_list(Args) ->
-            Msg;
-        Str when is_list(Str); is_binary(Str) ->
-            {string, Str}
-    end.
+    ).
 
 convert_level(Level) ->
     %% value between 0 ("emerg") and 7 ("debug") formatted as a decimal string
