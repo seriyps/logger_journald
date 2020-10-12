@@ -1,6 +1,6 @@
 {application, logger_journald, [
     {description, "Systemd's journald backend for OTP logger"},
-    {vsn, "0.1.2"},
+    {vsn, "0.2.0"},
     {registered, []},
     {applications, [
         kernel,
