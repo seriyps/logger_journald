@@ -80,6 +80,8 @@ which writes it to journld's socket via `gen_udp`.
 Logger supports some basic overload protection, only `sync_mode_qlen` and `drop_mode_qlen`
 are supported, they behave the same way as in standard logging handlers. See
 [User guide](http://erlang.org/doc/apps/kernel/logger_chapter.html#protecting-the-handler-from-overload).
+Handler keeps counting dropped messages and will periodically log how many messages were dropped
+since last report (if any).
 
 The way [logger:log_event()](http://erlang.org/doc/man/logger.html#type-log_event) is converted
 to a journald flat key-value structure is following:

@@ -57,7 +57,8 @@
 %%   <li>`sync_mode_qlen' - same as for `logger_std_h': when handler's msg queue reaches this
 %%   many messages, switch from `gen_server:cast' to `gen_server:call' (with default timeout)</li>
 %%   <li>`drop_mode_qlen' - same as for `logger_std_h': when handler's msg queue reaches this
-%%   many messages, just ignore log message without any traces</li>
+%%   many messages, just ignore log message. `warning' message will be periodically sent to the log
+%%   saying how many messages were dropped (if any)</li>
 %% </ul>
 
 -record(state, {
@@ -73,7 +74,9 @@
 -define(SIZE_SHRINK_TO_BYTES, 1024).
 -define(EAGAIN_RETRY_TIMES, 5).
 -define(EAGAIN_RETRY_SLEEP_MS, 50).
--define(OLP_CHECK_INTERVAL_MS, 1000).
+-define(OLP_CHECK_INTERVAL_MS, 2500).
+-define(OLP_MSQ_IDX, 1).
+-define(OLP_DROP_IDX, 2).
 -define(PT_KEY(Name), {?MODULE, Name, counter}).
 
 %%%===================================================================
@@ -142,7 +145,7 @@ init([Id, Opts]) ->
     Defaults = normalize_flat(maps:get(defaults, Opts, #{})),
     OlpCounter = persistent_term:get(?PT_KEY(Id)),
     {_, QLen} = erlang:process_info(self(), message_queue_len),
-    ok = counters:put(OlpCounter, 1, QLen),
+    ok = counters:put(OlpCounter, ?OLP_MSQ_IDX, QLen),
     {ok, #state{
         handle = Handle,
         defaults = Defaults,
@@ -191,12 +194,11 @@ do_log(NormalizedEvent, Defaults, Handle) ->
         {error, Posix} ->
             %% just crash if this one also fails
             MaybePid = maps:get(<<"ERL_PID">>, NormalizedEvent, <<"unknown">>),
-            Msg = io_lib:format("[logger] log emission for pid: ~p failed: ~p", [MaybePid, Posix]),
-            ok = journald_sock:log(
-                #{
-                    <<"MESSAGE">> => Msg,
-                    <<"PRIORITY">> => convert_level(error)
-                },
+            ok = internal_msg(
+                error,
+                "log emission for pid: ~p failed: ~p",
+                [MaybePid, Posix],
+                Defaults,
                 Handle
             )
     end.
@@ -329,7 +331,7 @@ normalize_kv(K, V) ->
 %% Overlaod protection
 
 overload_init(#{id := Name} = _Conf) ->
-    Counter = counters:new(1, []),
+    Counter = counters:new(2, []),
     persistent_term:put(?PT_KEY(Name), Counter).
 
 overload_stop(#{id := Name}) ->
@@ -344,18 +346,26 @@ overload_on_log(#{
     }
 }) ->
     Counter = persistent_term:get(?PT_KEY(Name)),
-    case counters:get(Counter, 1) of
+    case counters:get(Counter, ?OLP_MSQ_IDX) of
         Len when Len < SyncModeLen ->
-            counters:add(Counter, 1, 1),
+            counters:add(Counter, ?OLP_MSQ_IDX, 1),
             cast;
         Len when Len < DropModeLen ->
-            counters:add(Counter, 1, 1),
+            counters:add(Counter, ?OLP_MSQ_IDX, 1),
             call;
         _Len ->
+            counters:add(Counter, ?OLP_DROP_IDX, 1),
             drop
     end.
 
-check_overload(#state{olp_last_check = LastCheck, olp_counter = Counter} = St) ->
+check_overload(
+    #state{
+        olp_last_check = LastCheck,
+        olp_counter = Counter,
+        handle = Handle,
+        defaults = Defaults
+    } = St
+) ->
     Now = erlang:monotonic_time(millisecond),
     case (LastCheck + ?OLP_CHECK_INTERVAL_MS) < Now of
         true ->
@@ -364,10 +374,52 @@ check_overload(#state{olp_last_check = LastCheck, olp_counter = Counter} = St) -
             %% real message queue is empty (how??). Then `check_overload' won't be called and will
             %% stuck in this state forever (since `check_overload' is triggered by log messages)
             {_, QLen} = erlang:process_info(self(), message_queue_len),
-            ok = counters:put(Counter, 1, QLen),
+            ok = counters:put(Counter, ?OLP_MSQ_IDX, QLen),
+            case counters:get(Counter, ?OLP_DROP_IDX) of
+                0 ->
+                    ok;
+                NDropped ->
+                    LastCheckSys = erlang:time_offset(millisecond) + LastCheck,
+                    internal_msg(
+                        warning,
+                        ?MODULE_STRING ++ " dropped ~w messages since ~s",
+                        [
+                            NDropped,
+                            calendar:system_time_to_rfc3339(
+                                LastCheckSys,
+                                [{unit, millisecond}]
+                            )
+                        ],
+                        Defaults,
+                        Handle
+                    ),
+                    %% using `sub' because there might be more accumulated while we were sending
+                    %% internal_msg.
+                    %% In theory should check for int64 overflow, but unlikely in practice.
+                    counters:sub(Counter, ?OLP_DROP_IDX, NDropped)
+            end,
             %% TODO: implement "flush" mode here
             St#state{olp_last_check = Now};
         false ->
-            counters:sub(Counter, 1, 1),
+            counters:sub(Counter, ?OLP_MSQ_IDX, 1),
             St
     end.
+
+internal_msg(Level, Fmt, Params, Defaults, Handle) ->
+    Msg = io_lib:format("[logger] " ++ Fmt, Params),
+    FilteredDefaults = maps:filter(
+        fun
+            (<<"SYSLOG_IDENTIFIER">>, _) -> true;
+            ("SYSLOG_IDENTIFIER", _) -> true;
+            (K, _) -> unicode:characters_to_binary(K) == <<"SYSLOG_IDENTIFIER">>
+        end,
+        Defaults
+    ),
+    journald_sock:log(
+        FilteredDefaults#{
+            <<"MESSAGE">> => Msg,
+            <<"PRIORITY">> => convert_level(Level),
+            <<"ERL_DOMAIN">> => <<?MODULE_STRING>>
+        },
+        Handle
+    ).
