@@ -25,7 +25,9 @@ to your `sys.config`
               socket_path => "/run/systemd/journal/socket",  % optional
               defaults => #{"MY_KEY" => "My value",          % optional
                             "SYSLOG_IDENTIFIER" => my_release},
-              formatter => {logger_formtter, #{max_size => 4096}}
+              formatter => {logger_formtter, #{max_size => 4096}},
+              sync_mode_qlen => 10,
+              drop_mode_qlen => 200
             }
         }}
     ]}
@@ -75,8 +77,9 @@ When you call `logger:log` (or use `?LOG*` macro), your log message is converted
 key-value structure in the same process where `log` is called and then sent to this `gen_server`,
 which writes it to journld's socket via `gen_udp`.
 
-Be careful! All the log messages targeting one handler are sent through the single gen_server!
-There is no backpressure support at the moment!
+Logger supports some basic overload protection, only `sync_mode_qlen` and `drop_mode_qlen`
+are supported, they behave the same way as in standard logging handlers. See
+[User guide](http://erlang.org/doc/apps/kernel/logger_chapter.html#protecting-the-handler-from-overload).
 
 The way [logger:log_event()](http://erlang.org/doc/man/logger.html#type-log_event) is converted
 to a journald flat key-value structure is following:

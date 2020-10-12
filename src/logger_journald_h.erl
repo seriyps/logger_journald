@@ -2,11 +2,10 @@
 %%% @doc
 %%% OTP `logger' handler that sends logs to journald
 %%%
-%%% This handler does not provide any overload protection (yet). OTP's built-in `logger_olp' is not
-%%% documented (and not really reusable), so we can't use it here.
-%%%
 %%% It has a limited support for logger formatter: you can only use `logger_formatter' module and
 %%% `template' option will be ignored.
+%%%
+%%% It has some basic overload protection, see `sync_mode_qlen' and `drop_mode_qlen' options.
 %%%
 %%% Implementation of [http://erlang.org/doc/man/logger.html#handler_callback_functions
 %%%   logger handler callbacks].
@@ -45,7 +44,9 @@
 
 -type opts() :: #{
     socket_path => file:filename_all(),
-    defaults => #{journald_sock:key() => journald_sock:value()}
+    defaults => #{journald_sock:key() => journald_sock:value()},
+    sync_mode_qlen => pos_integer(),
+    drop_mode_qlen => pos_integer()
 }.
 
 %% Handler's specific options
@@ -53,14 +54,27 @@
 %%   <li>`socket_path' - path to journald control socket</li>
 %%   <li>`defaults' - flat key-value pairs which will be mixed-in to every log message (unless
 %%   overwritten by message's own fields)</li>
+%%   <li>`sync_mode_qlen' - same as for `logger_std_h': when handler's msg queue reaches this
+%%   many messages, switch from `gen_server:cast' to `gen_server:call' (with default timeout)</li>
+%%   <li>`drop_mode_qlen' - same as for `logger_std_h': when handler's msg queue reaches this
+%%   many messages, just ignore log message without any traces</li>
 %% </ul>
 
 -record(state, {
     handle :: journald_sock:handle(),
-    defaults :: #{binary() => iodata()}
+    defaults :: #{binary() => iodata()},
+    olp_last_check :: integer(),
+    olp_counter :: counters:counters_ref()
+    %% ,
+    %% olp_opts :: map()
 }).
 
 -define(OPT_KEYS, [socket_path, defaults]).
+-define(SIZE_SHRINK_TO_BYTES, 1024).
+-define(EAGAIN_RETRY_TIMES, 5).
+-define(EAGAIN_RETRY_SLEEP_MS, 50).
+-define(OLP_CHECK_INTERVAL_MS, 1000).
+-define(PT_KEY(Name), {?MODULE, Name, counter}).
 
 %%%===================================================================
 %%% API
@@ -73,96 +87,79 @@ start_link(Id, Opts) ->
 
 adding_handler(#{id := Name, module := ?MODULE} = Config) ->
     ensure_app(),
-    Opts = maps:get(config, Config, #{}),
-    MyOpts = maps:with(?OPT_KEYS, Opts),
-    Pid =
-        case logger_journald_sup:start_handler(Name, MyOpts) of
-            {ok, NewPid} ->
-                NewPid;
-            {error, {already_started, OldPid}} ->
-                %% maybe handler failed and have been restarted by supervisor
-                OldPid
-        end,
-    {ok, Config#{config => Opts#{handler_pid => Pid}}}.
+    Opts0 = maps:get(config, Config, #{}),
+    DefaultOpts = #{
+        sync_mode_qlen => 10,
+        drop_mode_qlen => 1000
+    },
+    Opts = maps:merge(DefaultOpts, Opts0),
+    HandlerOpts = maps:with(?OPT_KEYS, Opts0),
+    overload_init(Config#{config => Opts}),
+    case logger_journald_sup:start_handler(Name, HandlerOpts) of
+        {ok, NewPid} ->
+            NewPid;
+        {error, {already_started, OldPid}} ->
+            %% maybe handler failed and have been restarted by supervisor
+            OldPid
+    end,
+    {ok, Config#{config => Opts#{handler_reg => id_to_reg(Name)}}}.
 
 changing_config(_SetOrUpdate, _OldConfig, NewConfig) ->
     %% TODO
     {ok, NewConfig}.
 
-removing_handler(#{config := #{handler_pid := Pid}}) ->
-    logger_journald_sup:stop_handler(Pid).
+removing_handler(#{config := #{handler_reg := RegName}} = Config) ->
+    logger_journald_sup:stop_handler(RegName),
+    overload_stop(Config).
 
-log(LogEvent, #{config := #{handler_pid := Pid}} = Conf) ->
+log(LogEvent, #{config := #{handler_reg := RegName}} = Conf) ->
     NormalEvent = normalize_event(LogEvent, Conf),
-    gen_server:call(Pid, {log, NormalEvent}).
+    case overload_on_log(Conf) of
+        cast ->
+            gen_server:cast(RegName, {log, NormalEvent});
+        call ->
+            try
+                gen_server:call(RegName, {log, NormalEvent})
+            catch
+                exit:{timeout, _} ->
+                    timeout
+            end;
+        drop ->
+            dropped
+    end.
 
 filter_config(#{config := Opts} = Config) ->
-    Config#{config := maps:without([handler_pid], Opts)}.
+    Config#{config := maps:without([handler_reg], Opts)}.
 
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
 %% @private
-init([_Id, Opts]) ->
+init([Id, Opts]) ->
     % borrowed from logger_olp
     process_flag(message_queue_data, off_heap),
     Handle = journald_sock:open(Opts),
     Defaults = normalize_flat(maps:get(defaults, Opts, #{})),
-    {ok, #state{handle = Handle, defaults = Defaults}}.
+    OlpCounter = persistent_term:get(?PT_KEY(Id)),
+    {_, QLen} = erlang:process_info(self(), message_queue_len),
+    ok = counters:put(OlpCounter, 1, QLen),
+    {ok, #state{
+        handle = Handle,
+        defaults = Defaults,
+        olp_counter = OlpCounter,
+        olp_last_check = erlang:monotonic_time(millisecond)
+    }}.
 
 %% @private
-handle_call({log, NormalizedEvent}, _From, #state{defaults = Defaults, handle = Handle} = State) ->
-    %XXX: maybe do merge in log/2, before sending?
-    Event = maps:merge(Defaults, NormalizedEvent),
-    case try_send(Event, Handle) of
-        ok ->
-            ok;
-        {error, Posix} ->
-            %% just crash if this one also fails
-            MaybePid = maps:get(<<"ERL_PID">>, NormalizedEvent, <<"unknown">>),
-            Msg = io_lib:format("[logger] log emission for pid: ~p failed: ~p", [MaybePid, Posix]),
-            ok = journald_sock:log(
-                #{
-                    <<"MESSAGE">> => Msg,
-                    <<"PRIORITY">> => convert_level(error)
-                },
-                Handle
-            )
-    end,
+handle_call({log, NormalizedEvent}, _From, #state{defaults = Defaults, handle = Handle} = State0) ->
+    do_log(NormalizedEvent, Defaults, Handle),
+    State = check_overload(State0),
     {reply, ok, State}.
 
-try_send(Event, Handle) ->
-    case journald_sock:log(Event, Handle) of
-        ok ->
-            ok;
-        {error, TooBig} when TooBig == emsgsize; TooBig == enobufs ->
-            ShrinkLimit = 1024,
-            ShrunkMap = shrink(Event, ShrinkLimit),
-            journald_sock:log(ShrunkMap, Handle)
-    end.
-
-shrink(Event, ShrinkLimit) ->
-    maps:map(
-        fun(_K, V) ->
-            try string:slice(V, 0, ShrinkLimit) of
-                ShrunkV ->
-                    case iolist_size(ShrunkV) of
-                        ShrinkLimit ->
-                            %% Was probably shrunk
-                            [ShrunkV, <<"…"/utf8>>];
-                        _ ->
-                            ShrunkV
-                    end
-            catch
-                _:_ ->
-                    <<"truncated">>
-            end
-        end,
-        Event
-    ).
-
 %% @private
-handle_cast(_Request, State) ->
+handle_cast({log, NormalizedEvent}, #state{defaults = Defaults, handle = Handle} = State0) ->
+    do_log(NormalizedEvent, Defaults, Handle),
+    State = check_overload(State0),
     {noreply, State}.
 
 %% @private
@@ -184,6 +181,65 @@ code_change(_OldVsn, State, _Extra) ->
 
 %%%===================================================================
 %%% Internal functions
+
+do_log(NormalizedEvent, Defaults, Handle) ->
+    %XXX: maybe do merge in log/2, before sending?
+    Event = maps:merge(Defaults, NormalizedEvent),
+    case try_send(Event, Handle, ?EAGAIN_RETRY_TIMES) of
+        ok ->
+            ok;
+        {error, Posix} ->
+            %% just crash if this one also fails
+            MaybePid = maps:get(<<"ERL_PID">>, NormalizedEvent, <<"unknown">>),
+            Msg = io_lib:format("[logger] log emission for pid: ~p failed: ~p", [MaybePid, Posix]),
+            ok = journald_sock:log(
+                #{
+                    <<"MESSAGE">> => Msg,
+                    <<"PRIORITY">> => convert_level(error)
+                },
+                Handle
+            )
+    end.
+
+try_send(_Event, _Handle, 0) ->
+    {error, no_retries};
+try_send(Event, Handle, Retry) ->
+    case journald_sock:log(Event, Handle) of
+        ok ->
+            ok;
+        {error, TooBig} when TooBig == emsgsize; TooBig == enobufs ->
+            ShrinkLimit = ?SIZE_SHRINK_TO_BYTES,
+            ShrunkMap = shrink(Event, ShrinkLimit),
+            journald_sock:log(ShrunkMap, Handle);
+        {error, eagain} ->
+            timer:sleep(?EAGAIN_RETRY_SLEEP_MS),
+            try_send(Event, Handle, Retry - 1);
+        {error, _Other} = Err ->
+            Err
+    end.
+
+shrink(Event, ShrinkLimit) ->
+    maps:map(
+        fun(_K, V) ->
+            shrink_value(V, ShrinkLimit)
+        end,
+        Event
+    ).
+
+shrink_value(V, ShrinkLimit) ->
+    try string:slice(V, 0, ShrinkLimit) of
+        ShrunkV ->
+            case iolist_size(ShrunkV) of
+                ShrinkLimit ->
+                    %% Was probably shrunk
+                    [ShrunkV, <<"…"/utf8>>];
+                _ ->
+                    ShrunkV
+            end
+    catch
+        _:_ ->
+            <<"truncated">>
+    end.
 
 id_to_reg(Name) ->
     list_to_atom(?MODULE_STRING ++ "_" ++ atom_to_list(Name)).
@@ -269,3 +325,49 @@ normalize_flat(Map) ->
 
 normalize_kv(K, V) ->
     {string:uppercase(K), V}.
+
+%% Overlaod protection
+
+overload_init(#{id := Name} = _Conf) ->
+    Counter = counters:new(1, []),
+    persistent_term:put(?PT_KEY(Name), Counter).
+
+overload_stop(#{id := Name}) ->
+    persistent_term:erase(?PT_KEY(Name)).
+
+overload_on_log(#{
+    id := Name,
+    module := ?MODULE,
+    config := #{
+        drop_mode_qlen := DropModeLen,
+        sync_mode_qlen := SyncModeLen
+    }
+}) ->
+    Counter = persistent_term:get(?PT_KEY(Name)),
+    case counters:get(Counter, 1) of
+        Len when Len < SyncModeLen ->
+            counters:add(Counter, 1, 1),
+            cast;
+        Len when Len < DropModeLen ->
+            counters:add(Counter, 1, 1),
+            call;
+        _Len ->
+            drop
+    end.
+
+check_overload(#state{olp_last_check = LastCheck, olp_counter = Counter} = St) ->
+    Now = erlang:monotonic_time(millisecond),
+    case (LastCheck + ?OLP_CHECK_INTERVAL_MS) < Now of
+        true ->
+            %% XXX: there is a slight shance of real message queue length and counter to become out
+            %% of sync in such a way that counter makes all callers into "drop" mode while
+            %% real message queue is empty (how??). Then `check_overload' won't be called and will
+            %% stuck in this state forever (since `check_overload' is triggered by log messages)
+            {_, QLen} = erlang:process_info(self(), message_queue_len),
+            ok = counters:put(Counter, 1, QLen),
+            %% TODO: implement "flush" mode here
+            St#state{olp_last_check = Now};
+        false ->
+            counters:sub(Counter, 1, 1),
+            St
+    end.

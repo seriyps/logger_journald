@@ -11,6 +11,8 @@
 -export([
     just_log_case/1,
     truncation_case/1
+    %% ,
+    %% overload_case/1
 ]).
 
 -include_lib("stdlib/include/assert.hrl").
@@ -157,11 +159,46 @@ truncation_case(Cfg) when is_list(Cfg) ->
     ShrunkMsg = <<MsgPart/binary, "…"/utf8>>,
     ?assertMatch(#{<<"MESSAGE">> := ShrunkMsg}, p_recv(Srv)).
 
+%% @doc Test for overload protection
+%% XXX: don't yet know how to validate it. Maybe use tracing? Or mock gen_udp?
+%% overload_case({pre, Cfg}) ->
+%%     Srv = journald_server_mock:start(#{}),
+%%     add_handler_for_srv(?FUNCTION_NAME, Srv, #{
+%%         sync_mode_qlen => 5,
+%%         drop_mode_qlen => 10
+%%     }),
+%%     logger:set_module_level(logger_backend, debug),
+%%     [{srv, Srv} | Cfg];
+%% overload_case({post, Cfg}) ->
+%%     Srv = ?config(srv, Cfg),
+%%     logger:remove_handler(?FUNCTION_NAME),
+%%     journald_server_mock:stop(Srv),
+%%     Cfg;
+%% overload_case(Cfg) when is_list(Cfg) ->
+%%     Srv = ?config(srv, Cfg),
+%%     io:format(user, "start ~n", []),
+%%     Pids = [spawn_link(fun() -> log_loop(10) end) || _ <- lists:seq(1, 10)],
+%%     [p_recv(Srv) || _ <- lists:seq(1, 5)],
+%%     timer:sleep(3000),
+%%     logger:notice("trigger check_overload"),
+%%     [p_recv(Srv) || _ <- lists:seq(1, 30)],
+%%     [exit(Pid, shutdown) || Pid <- Pids],
+%%     ok.
+
+%% log_loop(0) ->
+%%     ok;
+%% log_loop(N) ->
+%%     logger:notice("loop ~w from ~p", [N, self()], #{domain => [test]}),
+%%     log_loop(N - 1).
+
 %% Internal
 
 add_handler_for_srv(Id, Srv) ->
+    add_handler_for_srv(Id, Srv, #{}).
+
+add_handler_for_srv(Id, Srv, Conf) ->
     Path = journald_server_mock:get_path(Srv),
-    ok = logger:add_handler(Id, logger_journald_h, #{config => #{socket_path => Path}}).
+    ok = logger:add_handler(Id, logger_journald_h, #{config => Conf#{socket_path => Path}}).
 
 p_recv(Srv) ->
     journald_server_mock:recv_parse(Srv).

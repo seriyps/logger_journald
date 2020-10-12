@@ -13,5 +13,5 @@ script:
   - rebar3 edoc
   - rebar3 eunit -c
   - rebar3 ct -c
-  - rebar3 cover -v --min_coverage 80
+  - rebar3 cover -v --min_coverage 75
   - rebar3 dialyzer
