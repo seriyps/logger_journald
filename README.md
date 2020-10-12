@@ -107,9 +107,7 @@ Development
 Please, run the following before committing
 
 ```
-rebar3 as dev fmt
-rebar3 as dev lint
-rebar3 eunit
-rebar3 edoc
-rebar3 dialyzer
+make pre-commit
+make test
+make dialyzer
 ```
