@@ -21,11 +21,11 @@ to your `sys.config`
     {logger, [
         {handler, my_handler, logger_journald_h, #{
             level => info,
+            formatter => {logger_formtter, #{max_size => 4096}},
             config => #{
               socket_path => "/run/systemd/journal/socket",  % optional
               defaults => #{"MY_KEY" => "My value",          % optional
                             "SYSLOG_IDENTIFIER" => my_release},
-              formatter => {logger_formtter, #{max_size => 4096}},
               sync_mode_qlen => 10,
               drop_mode_qlen => 200
             }
