@@ -192,9 +192,8 @@ do_log(NormalizedEvent, Defaults, Handle) ->
         ok ->
             ok;
         {error, Posix} ->
-            %% just crash if this one also fails
             MaybePid = maps:get(<<"ERL_PID">>, NormalizedEvent, <<"unknown">>),
-            ok = internal_msg(
+            internal_msg(
                 error,
                 "log emission for pid: ~p failed: ~p",
                 [MaybePid, Posix],
@@ -415,11 +414,19 @@ internal_msg(Level, Fmt, Params, Defaults, Handle) ->
         end,
         Defaults
     ),
-    journald_sock:log(
-        FilteredDefaults#{
-            <<"MESSAGE">> => Msg,
-            <<"PRIORITY">> => convert_level(Level),
-            <<"ERL_DOMAIN">> => <<?MODULE_STRING>>
-        },
-        Handle
-    ).
+    Event = FilteredDefaults#{
+        <<"MESSAGE">> => Msg,
+        <<"PRIORITY">> => convert_level(Level),
+        <<"ERL_DOMAIN">> => <<?MODULE_STRING>>
+    },
+    case journald_sock:log(Event, Handle) of
+        ok ->
+            journal;
+        {error, Err} ->
+            io:format(
+                standard_error,
+                ?MODULE_STRING ":~w error '~0p' sending internal message ~0p",
+                [?LINE, Err, Event]
+            ),
+            standard_error
+    end.
