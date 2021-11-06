@@ -1,0 +1,35 @@
+name: CI
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+jobs:
+  ci:
+    name: Checks and tests on OTP-${{matrix.otp_vsn}}, ${{matrix.os}}
+    runs-on: ${{matrix.os}}
+
+    strategy:
+      matrix:
+        otp_vsn: [21.3, 22.3, 23.3, 24.1]
+        os: [ubuntu-latest]
+
+    container:
+      image: erlang:${{matrix.otp_vsn}}
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Lint
+        run: make lint
+
+      - name: Test
+        run: make test
+
+      - name: Edoc
+        run: make doc
+
+      - name: Dialyzer
+        run: make dialyzer
