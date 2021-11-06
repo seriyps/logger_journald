@@ -86,26 +86,15 @@ gen_udp_send(Fd, Dest, Packet) ->
 -endif.
 
 %% Keys supposed to be uppercase, but we are not enforcing that
-format_pair(K, V) when is_integer(V) ->
-    format_pair(K, integer_to_binary(V));
-format_pair(K, V) when is_atom(V) ->
-    format_pair(K, atom_to_binary(V, utf8));
+%% Values are supposed to be valid iolists (eg, lists of binaries and integers in a 0..255 range)
 format_pair(K, V) when is_binary(K) orelse is_list(K), is_binary(V) orelse is_list(V) ->
     (iolist_size(K) > 0) orelse error(empty_key),
     (not has_nl_or_eq(K)) orelse error({newline_or_eq_in_key, K}),
-    %% cheapest way to check if `V' is indeed iolist (eg, has no ints over 255)
-    V1 =
-        try iolist_size(V) of
-            _ -> V
-        catch
-            error:badarg ->
-                unicode:characters_to_binary(V)
-        end,
-    case has_nl(V1) of
+    case has_nl(V) of
         false ->
-            [K, "=", V1, $\n];
+            [K, "=", V, $\n];
         true ->
-            [K, <<"\n", (iolist_size(V1)):64/unsigned-little>>, V, $\n]
+            [K, <<"\n", (iolist_size(V)):64/unsigned-little>>, V, $\n]
     end.
 
 has_nl(Subj) ->
@@ -128,15 +117,10 @@ format_test() ->
         {<<"A=B\n">>, [{"A", "B"}]},
         {<<"A=B\n">>, #{"A" => "B"}},
         {<<"A=B\n">>, #{<<"A">> => <<"B">>}},
-        {<<"A=B\n">>, #{<<"A">> => 'B'}},
-        {<<"A=10\n">>, #{<<"A">> => 10}},
-        {<<"A=B\nC=D\nE=F\nG=123\n">>, [
+        {<<"A=B\nC=D\n">>, [
             {<<"A">>, <<"B">>},
-            {"C", "D"},
-            {"E", 'F'},
-            {"G", 123}
+            {"C", "D"}
         ]},
-        {<<"A=привет\n"/utf8>>, #{"A" => "привет"}},
         {<<"A=привет\n"/utf8>>, #{"A" => <<"привет"/utf8>>}},
         {<<"A\n", 3:64/unsigned-little, "B\nC\n">>, #{<<"A">> => <<"B\nC">>}},
         {<<"A\n", 3:64/unsigned-little, "B\nC\n">>, #{<<"A">> => ["B", $\n, <<"C">>]}},

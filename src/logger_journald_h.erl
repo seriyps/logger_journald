@@ -260,7 +260,7 @@ normalize_event(#{msg := _, level := Level, meta := Meta} = Event, Conf) ->
         [chars_limit, depth, max_size, report_cb, single_line],
         FormatterConf0
     ),
-    Msg = logger_formatter:format(Event, FormatterConf#{template => [msg]}),
+    Msg = ensure_bytes(logger_formatter:format(Event, FormatterConf#{template => [msg]})),
     maps:from_list(
         [
             {<<"PRIORITY">>, convert_level(Level)},
@@ -319,13 +319,28 @@ convert_meta(Key, Value) when
 convert_meta(Key, Value) when is_atom(Key) ->
     convert_meta(atom_to_binary(Key, utf8), Value);
 convert_meta(Key, Value) ->
-    normalize_kv(Key, io_lib:format("~0p", [Value])).
+    normalize_kv(Key, io_lib:format("~0tp", [Value])).
 
 normalize_flat(Map) ->
     maps:from_list([normalize_kv(K, V) || {K, V} <- maps:to_list(Map)]).
 
 normalize_kv(K, V) ->
-    {string:uppercase(K), V}.
+    {string:uppercase(K), ensure_bytes(V)}.
+
+ensure_bytes(V) when is_binary(V) ->
+    V;
+ensure_bytes(V) when is_list(V) ->
+    %% cheapest way to check if `V0' is indeed iolist (eg, has no ints over 255)
+    try iolist_size(V) of
+        _ -> V
+    catch
+        error:badarg ->
+            unicode:characters_to_binary(V)
+    end;
+ensure_bytes(V) when is_integer(V) ->
+    integer_to_binary(V);
+ensure_bytes(V) when is_atom(V) ->
+    atom_to_binary(V, utf8).
 
 %% Overlaod protection
 
@@ -430,3 +445,38 @@ internal_msg(Level, Fmt, Params, Defaults, Handle) ->
             ),
             standard_error
     end.
+
+-ifdef(EUNIT).
+
+-include_lib("eunit/include/eunit.hrl").
+
+format_test() ->
+    Samples = [
+        {#{<<"MESSAGE">> => <<"\"A\": B">>}, {report, #{"A" => "B"}}, #{}},
+        {#{<<"MESSAGE">> => <<"\"A\": привет"/utf8>>}, {report, #{"A" => "привет"}}, #{}},
+        {#{"A" => <<"привет"/utf8>>, <<"MESSAGE">> => <<"">>}, {string, ""}, #{"A" => "привет"}},
+        {#{<<"A">> => <<"привет"/utf8>>, <<"MESSAGE">> => <<"">>}, {string, ""}, #{
+            <<"A">> => <<"привет"/utf8>>
+        }},
+        {#{"A" => <<"привет"/utf8>>, <<"MESSAGE">> => <<"привет"/utf8>>}, {string, "привет"}, #{
+            "A" => <<"привет"/utf8>>
+        }},
+        {#{"A" => <<"привет"/utf8>>, <<"MESSAGE">> => <<"привет"/utf8>>},
+            {string, <<"привет"/utf8>>}, #{"A" => "привет"}}
+    ],
+    [
+        begin
+            Event = #{msg => Msg, level => info, meta => Meta},
+            NormEvent0 = normalize_event(Event, #{}),
+            NormMsg = maps:get(<<"MESSAGE">>, NormEvent0),
+            NormEvent = NormEvent0#{<<"MESSAGE">> := iolist_to_binary(NormMsg)},
+            ?assertEqual(
+                Expect#{<<"PRIORITY">> => "6"},
+                NormEvent,
+                Event
+            )
+        end
+        || {Expect, Msg, Meta} <- Samples
+    ].
+
+-endif.
