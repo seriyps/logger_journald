@@ -1,3 +1,4 @@
+%% coding: utf8
 %% @doc Tiny interface to Journald socket
 %%
 %% See `man sd_journal_sendv', `man systemd.journal-fields'
@@ -92,11 +93,19 @@ format_pair(K, V) when is_atom(V) ->
 format_pair(K, V) when is_binary(K) orelse is_list(K), is_binary(V) orelse is_list(V) ->
     (iolist_size(K) > 0) orelse error(empty_key),
     (not has_nl_or_eq(K)) orelse error({newline_or_eq_in_key, K}),
-    case has_nl(V) of
+    %% cheapest way to check if `V' is indeed iolist (eg, has no ints over 255)
+    V1 =
+        try iolist_size(V) of
+            _ -> V
+        catch
+            error:badarg ->
+                unicode:characters_to_binary(V)
+        end,
+    case has_nl(V1) of
         false ->
-            [K, "=", V, $\n];
+            [K, "=", V1, $\n];
         true ->
-            [K, <<"\n", (iolist_size(V)):64/unsigned-little>>, V, $\n]
+            [K, <<"\n", (iolist_size(V1)):64/unsigned-little>>, V, $\n]
     end.
 
 has_nl(Subj) ->
@@ -127,8 +136,11 @@ format_test() ->
             {"E", 'F'},
             {"G", 123}
         ]},
+        {<<"A=привет\n"/utf8>>, #{"A" => "привет"}},
+        {<<"A=привет\n"/utf8>>, #{"A" => <<"привет"/utf8>>}},
         {<<"A\n", 3:64/unsigned-little, "B\nC\n">>, #{<<"A">> => <<"B\nC">>}},
-        {<<"A\n", 3:64/unsigned-little, "B\nC\n">>, #{<<"A">> => ["B", $\n, <<"C">>]}}
+        {<<"A\n", 3:64/unsigned-little, "B\nC\n">>, #{<<"A">> => ["B", $\n, <<"C">>]}},
+        {<<"A\n", 19:64/unsigned-little, "привет\nмир\n"/utf8>>, #{"A" => <<"привет\nмир"/utf8>>}}
     ],
     [?assertEqual(Expect, iolist_to_binary(format(KV)), KV) || {Expect, KV} <- Samples],
 
