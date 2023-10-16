@@ -335,7 +335,10 @@ ensure_bytes(V) when is_list(V) ->
         _ -> V
     catch
         error:badarg ->
-            unicode:characters_to_binary(V)
+            try unicode:characters_to_binary(V)
+	    catch error:badarg ->
+	        io_lib:format("~w", [V])
+	    end
     end;
 ensure_bytes(V) when is_integer(V) ->
     integer_to_binary(V);
