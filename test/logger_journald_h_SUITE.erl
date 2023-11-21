@@ -94,7 +94,9 @@ just_log_case(Cfg) when is_list(Cfg) ->
     ?assertMatch(#{<<"MESSAGE">> := <<"Hello world">>}, p_recv(Srv)),
 
     logger:log(debug, #{a => b, c => d}),
-    ?assertMatch(#{<<"MESSAGE">> := <<"a: b, c: d">>}, p_recv(Srv)),
+    #{<<"MESSAGE">> := Msg} = p_recv(Srv),
+    %% <<"a: b, c: d">> or <<"c: d, a: b">>
+    ?assertMatch([<<"a: b">>, <<"c: d">>], lists:sort(binary:split(Msg, <<", ">>))),
 
     logger:log(error, #{a => b}, #{report_cb => fun(Rep) -> {"~p", [Rep]} end}),
     ?assertMatch(#{<<"MESSAGE">> := <<"#{a => b}">>}, p_recv(Srv)),
