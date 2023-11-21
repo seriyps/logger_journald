@@ -344,7 +344,9 @@ ensure_bytes(V) when is_atom(V) ->
 
 non_io_list_to_bytes(V) ->
     try
-        unicode:characters_to_binary(V)
+        Res = unicode:characters_to_binary(V),
+        is_binary(Res) orelse error(badarg),
+        Res
     catch
         error:badarg ->
             iolist_to_binary(io_lib:format("~w", [V]))
