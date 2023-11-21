@@ -335,15 +335,20 @@ ensure_bytes(V) when is_list(V) ->
         _ -> V
     catch
         error:badarg ->
-            try unicode:characters_to_binary(V)
-	    catch error:badarg ->
-	        io_lib:format("~w", [V])
-	    end
+            non_io_list_to_bytes(V)
     end;
 ensure_bytes(V) when is_integer(V) ->
     integer_to_binary(V);
 ensure_bytes(V) when is_atom(V) ->
     atom_to_binary(V, utf8).
+
+non_io_list_to_bytes(V) ->
+    try
+        unicode:characters_to_binary(V)
+    catch
+        error:badarg ->
+            iolist_to_binary(io_lib:format("~w", [V]))
+    end.
 
 %% Overlaod protection
 
